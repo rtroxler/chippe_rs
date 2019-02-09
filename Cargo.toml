@@ -1,0 +1,6 @@
+[package]
+name = "chippe_rs"
+version = "0.1.0"
+authors = ["Ryan Troxler <rtroxler@rednovalabs.com>"]
+
+[dependencies]
