@@ -14,7 +14,6 @@ struct Cpu {
     reg_i: u16,
     delay_timer: u8,
     sound_timer: u8,
-    stack: [u16; STACK_SIZE],
     stack_pointer: u8,
     ram: Box<[u8; RAM_SIZE]>,
 }
@@ -27,7 +26,6 @@ impl Default for Cpu {
             reg_i: 0,
             delay_timer: 0,
             sound_timer: 0,
-            stack: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             stack_pointer: 0,
             ram: Box::new([0; RAM_SIZE]),
         }
@@ -49,6 +47,12 @@ impl Cpu {
         self.ram = Box::new(ram);
     }
 
+    fn reset(&mut self) {
+        self.program_counter = 0x200;
+        self.stack_pointer = 0xfa0;
+        // screen is set to a slice of ram starting at 0xf00 ?
+    }
+
     fn run(&mut self) {
         self.program_counter = 0x200;
 
@@ -63,7 +67,10 @@ impl Cpu {
             }
 
             let str_instruction = fetch_instruction_str(op1, op2);
-            println!("{}", str_instruction);
+            println!(
+                "{:04x?} {:02x} {:02x} :: {}",
+                self.program_counter, op1, op2, str_instruction
+            );
 
             self.program_counter += 2;
         }
