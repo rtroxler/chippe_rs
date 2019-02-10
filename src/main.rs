@@ -4,8 +4,18 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
+extern crate rand;
+use rand::prelude::*;
+
+extern crate sdl2;
+mod drivers;
+use drivers::display::DisplayDriver;
+
 const RAM_SIZE: usize = 4 * 1024; // 4 KB
 const GPR_SIZE: usize = 16;
+
+const CHIP8_WIDTH: u32 = 64;
+const CHIP8_HEIGHT: u32 = 32;
 
 struct RamArray {
     pub memory: Box<[u8; RAM_SIZE]>
@@ -123,6 +133,13 @@ impl Cpu {
                 }
                 0xEE => {
                     //RET
+                    let pc_high = self.ram.memory[self.stack_pointer as usize];
+                    let pc_lo = self.ram.memory[(self.stack_pointer + 1) as usize];
+
+                    let target: u16 = (((pc_high as u16) << 8) | (pc_lo as u16)).into();
+                    self.program_counter = target;
+
+                    self.stack_pointer -= 2;
                 }
                 _ => {}
             },
@@ -145,14 +162,23 @@ impl Cpu {
 
                 self.program_counter = target
             }
-            0x3 => {
-                //format!("SE V{:x?}, {:x?}", lo_nibble, byte2),
+            0x3 => { // SE Vx, byte
+                if self.gpr_v[lo_nibble as usize] == byte2 {
+                    self.program_counter += 2;
+                }
+                self.program_counter += 2;
             }
-            0x4 => {
-                //format!("SNE V{:x?}, {:x?}", lo_nibble, byte2),
+            0x4 => { // SNE Vx, byte
+                if self.gpr_v[lo_nibble as usize] != byte2 {
+                    self.program_counter += 2;
+                }
+                self.program_counter += 2;
             }
-            0x5 => {
-                //format!("SE V{:x?}, V{:x?}", lo_nibble, high_nibble2),
+            0x5 => { // SE Vx, Vy
+                if self.gpr_v[lo_nibble as usize] == self.gpr_v[high_nibble2 as usize] {
+                    self.program_counter += 2;
+                }
+                self.program_counter += 2;
             }
             0x6 => {
                 //LD Vx, byte
@@ -160,58 +186,105 @@ impl Cpu {
 
                 self.program_counter += 2;
             }
-            0x7 => {
-                //format!("ADD V{:x?}, {:x?}", lo_nibble, byte2),
+            0x7 => { // ADD Vx, byte
+                self.gpr_v[lo_nibble as usize] += byte2;
+
+                self.program_counter += 2;
             }
             0x8 => match lo_nibble2 {
-                0x0 => {
-                    //format!("LD V{:x?}, V{:x?}", lo_nibble, high_nibble2),
+                0x0 => { // LD Vx, Vy
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[high_nibble2 as usize];
+
+                    self.program_counter += 2;
                 }
-                0x1 => {
-                    //format!("OR V{:x?}, V{:x?}", lo_nibble, high_nibble2),
+                0x1 => { // OR Vx, Vy
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[lo_nibble as usize] | self.gpr_v[high_nibble2 as usize];
+
+                    self.program_counter += 2;
                 }
-                0x2 => {
-                    //format!("AND V{:x?}, V{:x?}", lo_nibble, high_nibble2),
+                0x2 => { // AND Vx, Vy
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[lo_nibble as usize] & self.gpr_v[high_nibble2 as usize];
+
+                    self.program_counter += 2;
                 }
-                0x3 => {
-                    //format!("XOR V{:x?}, V{:x?}", lo_nibble, high_nibble2),
+                0x3 => { // XOR Vx, Vy
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[lo_nibble as usize] ^ self.gpr_v[high_nibble2 as usize];
+
+                    self.program_counter += 2;
                 }
-                0x4 => {
-                    //format!("ADD V{:x?}, V{:x?}", lo_nibble, high_nibble2),
+                0x4 => { // ADD Vx, Vy, set VF to carry
+                    // TODO Set VF
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[lo_nibble as usize] + self.gpr_v[high_nibble2 as usize];
+
+                    self.program_counter += 2;
                 }
-                0x5 => {
-                    //format!("SUB V{:x?}, V{:x?}", lo_nibble, high_nibble2),
+                0x5 => { //SUB Vx, Vy
+                    if self.gpr_v[lo_nibble as usize] > self.gpr_v[high_nibble2 as usize] {
+                        self.gpr_v[0xf] = 1
+                    } else {
+                        self.gpr_v[0xf] = 0
+                    }
+
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[lo_nibble as usize] - self.gpr_v[high_nibble2 as usize];
+
+                    self.program_counter += 2;
                 }
-                0x6 => {
-                    //format!("SHR V{:x?} {{, V{:x?}}}", lo_nibble, high_nibble2),
+                0x6 => { // SHR Vx
+                    if self.gpr_v[lo_nibble as usize] & 0x1 == 1 { // I think this might also be wrong
+                        self.gpr_v[0xf] = 1
+                    } else {
+                        self.gpr_v[0xf] = 0
+                    }
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[lo_nibble as usize] >> 1;
+
+                    self.program_counter += 2;
                 }
-                0x7 => {
-                    //format!("SUBN V{:x?}, V{:x?}", lo_nibble, high_nibble2),
+                0x7 => { // SUBN Vx, Vy
+                    if self.gpr_v[lo_nibble as usize] < self.gpr_v[high_nibble2 as usize] {
+                        self.gpr_v[0xf] = 1
+                    } else {
+                        self.gpr_v[0xf] = 0
+                    }
+
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[high_nibble2 as usize] - self.gpr_v[lo_nibble as usize];
+
+                    self.program_counter += 2;
                 }
-                0xE => {
-                    //format!("SHL V{:x?} {{, V{:x?}}}", lo_nibble, high_nibble2),
+                0xE => { // SHL Vx
+                    if self.gpr_v[lo_nibble as usize] & 0x8 == 1 { // I think this is wrong
+                        self.gpr_v[0xf] = 1
+                    } else {
+                        self.gpr_v[0xf] = 0
+                    }
+                    self.gpr_v[lo_nibble as usize] = self.gpr_v[lo_nibble as usize] << 1;
+
+                    self.program_counter += 2;
                 }
                 _ => {
                     //format!("not supported ({:x?}{:x?})", byte1, byte2),
                 }
             },
-            0xA => {
-                //format!("LD I, {:x?}{:x?}", lo_nibble, byte2),
+            0xA => { // LD I, addr
                 let target: u16 = (((lo_nibble as u16) << 8) | (byte2 as u16)).into();
                 self.reg_i = target;
 
                 self.program_counter += 2;
             }
-            0xB => {
-                //format!("JP V0, {:x?}{:x?}", lo_nibble, byte2),
+            0xB => { // JP V0, addr
+                let target: u16 = (((lo_nibble as u16) << 8) | (byte2 as u16)).into();
+                self.program_counter = target + self.gpr_v[0 as usize] as u16;
             }
-            0xC => {
-                //format!("RND V{:x?}, {:x?}", lo_nibble, byte2),
-            }
-            0xD => {
-                //"DRW V{:x?}, V{:x?}, {:x?}",
+            0xC => { // RND Vx, byte
+                let random = rand::random::<u8>();
 
+                self.gpr_v[lo_nibble as usize] = random & byte2;
+
+                self.program_counter += 2;
+            }
+            0xD => { // DRW Vx, Vy, nibble
+                //"DRW V{:x?}, V{:x?}, {:x?}",
                 // TODO
+
                 self.program_counter += 2;
             }
             0xE => match byte2 {
@@ -246,6 +319,7 @@ impl Cpu {
                 }
                 0x33 => {
                     //format!("LD B, V{:x?}", lo_nibble),
+                    self.program_counter += 2;
                 }
                 0x55 => {
                     //format!("LD [I], V{:x?}", lo_nibble),
@@ -268,11 +342,39 @@ fn main() {
     let rom_name = env::args().nth(1).expect("Please provide a file name.");
 
     let mut cpu = Cpu::default();
+
+    //
+    // display
+    //
+    let sdl_context = sdl2::init().unwrap();
+    let mut driver = DisplayDriver::new(&sdl_context);
+
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let mut pixels = [[0 as u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize];
+    for y in 0..CHIP8_HEIGHT {
+        for x in 0..CHIP8_WIDTH {
+            pixels[y as usize][x as usize] = (y as u8 + x as u8) % 2;
+        }
+    }
+
+    // Not actually drawing anything :(
+    driver.draw(&pixels);
+
+    std::thread::sleep(std::time::Duration::from_secs(4));
+
+    //
+    // processor
+    //
     cpu.reset();
     cpu.load_rom(rom_name);
 
     cpu.run();
 }
+
+
+
+
 
 // Chip-8 Disassembler
 fn fetch_instruction_str(byte1: u8, byte2: u8) -> String {

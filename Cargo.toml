@@ -2,5 +2,12 @@
 name = "chippe_rs"
 version = "0.1.0"
 authors = ["Ryan Troxler <rtroxler@rednovalabs.com>"]
+edition = "2018"
 
 [dependencies]
+rand = "0.6.5"
+
+[dependencies.sdl2]
+version = "0.30"
+default-features = false
+features = ["gfx"]
