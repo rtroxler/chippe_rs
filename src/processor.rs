@@ -9,6 +9,13 @@ use rand::prelude::*;
 use crate::GPR_SIZE;
 use crate::RAM_SIZE;
 
+use crate::CHIP8_HEIGHT;
+use crate::CHIP8_WIDTH;
+
+use crate::drivers::audio::AudioDriver;
+use crate::drivers::display::DisplayDriver;
+use crate::drivers::keyboard::KeyboardDriver;
+
 struct RamArray {
     pub memory: Box<[u8; RAM_SIZE]>,
 }
@@ -32,8 +39,16 @@ impl RamArray {
     }
 }
 
-#[derive(Debug)]
+//#[derive(Debug)]
+struct PeripheralDriver {
+    audio: AudioDriver,
+    display: DisplayDriver,
+    keyboard: KeyboardDriver,
+}
+
+//#[derive(Debug)]
 pub struct Processor {
+    peripheral_driver: PeripheralDriver,
     program_counter: u16,
     gpr_v: [u8; GPR_SIZE], // General Purpose Registers (V0 - VF)
     reg_i: u16,
@@ -43,9 +58,14 @@ pub struct Processor {
     ram: RamArray,
 }
 
-impl Default for Processor {
-    fn default() -> Processor {
+impl Processor {
+    pub fn new(sdl: &sdl2::Sdl) -> Processor {
         Processor {
+            peripheral_driver: PeripheralDriver {
+                audio: AudioDriver::new(&sdl),
+                display: DisplayDriver::new(&sdl),
+                keyboard: KeyboardDriver::new(&sdl),
+            },
             program_counter: 0,
             gpr_v: [0; GPR_SIZE],
             reg_i: 0,
@@ -55,9 +75,7 @@ impl Default for Processor {
             ram: RamArray::new(),
         }
     }
-}
 
-impl Processor {
     pub fn load_rom<P: AsRef<Path>>(&mut self, path: P) {
         // Open file and dump contents into file_buf
         let mut file = fs::File::open(path).unwrap();
@@ -81,8 +99,31 @@ impl Processor {
     }
 
     pub fn run(&mut self) {
-        while (self.program_counter as usize) < self.ram.len() {
+        'running: loop {
             // Display if needed to redraw
+            let keep_going = self.peripheral_driver.keyboard.poll(); // make this return the key set as a result
+
+            if !keep_going {
+                break 'running;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(200));
+
+            let mut pixels = [[0 as u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize];
+            for y in 0..CHIP8_HEIGHT {
+                for x in 0..CHIP8_WIDTH {
+                    pixels[y as usize][x as usize] = (y as u8 + x as u8) % 2;
+                }
+            }
+
+            // This is just spots in memory, right?
+            self.peripheral_driver.display.draw(&pixels);
+
+            self.peripheral_driver.audio.start_beep();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            self.peripheral_driver.audio.stop_beep();
+
+            std::thread::sleep(std::time::Duration::from_millis(200));
 
             // Instruction fetch
             let op1 = self.ram.memory[self.program_counter as usize];
@@ -91,7 +132,7 @@ impl Processor {
             if op1 == 0x00 && op2 == 0x00 {
                 // Break on 0 byte? Avoids the zeroed out end of RAM, not sure if
                 // necessary or not though
-                break;
+                break 'running;
             }
 
             let str_instruction = fetch_instruction_str(op1, op2);
@@ -104,15 +145,11 @@ impl Processor {
             self.execute(op1, op2);
             if temp == self.program_counter {
                 println!("infinite loop detected");
-                dbg!(self);
-                break;
+                //dbg!(self);
+                break 'running;
             }
         }
     }
-
-    //fn load(dst: u8, src: u8) {
-    //// TODO
-    //}
 
     fn execute(&mut self, byte1: u8, byte2: u8) {
         // todo
