@@ -19,7 +19,7 @@ impl DisplayDriver {
     pub fn new(sdl_context: &sdl2::Sdl) -> Self {
         let video_subsys = sdl_context.video().unwrap();
 
-        let window = video_subsys.window("rust-sdl2_gfx: draw line & FPSManager", SCREEN_WIDTH, SCREEN_HEIGHT)
+        let window = video_subsys.window("chippe_rs", SCREEN_WIDTH, SCREEN_HEIGHT)
                 .position_centered()
                 .opengl()
                 .build()
@@ -41,7 +41,6 @@ impl DisplayDriver {
             for (x, &col) in row.iter().enumerate() {
                 let x = (x as u32) * SCALE_FACTOR;
                 let y = (y as u32) * SCALE_FACTOR;
-                println!("{},{}: {}", x, y, col);
 
                 self.canvas.set_draw_color(color(col));
                 let _ = self.canvas.fill_rect(Rect::new(x as i32, y as i32, SCALE_FACTOR, SCALE_FACTOR));
