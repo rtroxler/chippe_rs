@@ -2,9 +2,7 @@ use std::env;
 
 extern crate sdl2;
 mod drivers;
-use drivers::audio::AudioDriver;
-use drivers::display::DisplayDriver;
-use drivers::keyboard::KeyboardDriver;
+mod font;
 
 mod processor;
 use processor::Processor;

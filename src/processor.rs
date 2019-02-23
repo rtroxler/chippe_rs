@@ -4,13 +4,14 @@ use std::io::Read;
 use std::path::Path;
 
 extern crate rand;
-use rand::prelude::*;
 
 use crate::GPR_SIZE;
 use crate::RAM_SIZE;
 
 use crate::CHIP8_HEIGHT;
 use crate::CHIP8_WIDTH;
+
+use crate::font::FONT_SET;
 
 use crate::drivers::audio::AudioDriver;
 use crate::drivers::display::DisplayDriver;
@@ -33,23 +34,18 @@ impl RamArray {
             memory: Box::new([0; RAM_SIZE]),
         }
     }
-
-    fn len(&mut self) -> usize {
-        self.memory.len()
-    }
 }
 
-//#[derive(Debug)]
 struct PeripheralDriver {
     audio: AudioDriver,
     display: DisplayDriver,
     keyboard: KeyboardDriver,
 }
 
-//#[derive(Debug)]
 pub struct Processor {
     peripheral_driver: PeripheralDriver,
     program_counter: u16,
+    keyboard_state: [bool; 16],
     gpr_v: [u8; GPR_SIZE], // General Purpose Registers (V0 - VF)
     reg_i: u16,
     delay_timer: u8,
@@ -67,6 +63,7 @@ impl Processor {
                 keyboard: KeyboardDriver::new(&sdl),
             },
             program_counter: 0,
+            keyboard_state: [false; 16],
             gpr_v: [0; GPR_SIZE],
             reg_i: 0,
             delay_timer: 0,
@@ -84,6 +81,12 @@ impl Processor {
 
         // Define temp ram array
         let mut ram = [0; 4096];
+
+        // read font into ram
+        for i in 0..FONT_SET.len() {
+            ram[i] = FONT_SET[i];
+        }
+
         // Copy file binary into ram, starting at 0x200
         ram[0x200..file_buf.len() + 0x200].copy_from_slice(&file_buf[..]);
 
@@ -100,15 +103,15 @@ impl Processor {
 
     pub fn run(&mut self) {
         'running: loop {
+            // set keyboard state and detect interrupt
+            match self.peripheral_driver.keyboard.poll() {
+                Ok(key_state) => self.keyboard_state = key_state,
+                Err(e) => break 'running,
+            } // make this return the key set as a result
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
             // Display if needed to redraw
-            let keep_going = self.peripheral_driver.keyboard.poll(); // make this return the key set as a result
-
-            if !keep_going {
-                break 'running;
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(200));
-
             let mut pixels = [[0 as u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize];
             for y in 0..CHIP8_HEIGHT {
                 for x in 0..CHIP8_WIDTH {
@@ -119,13 +122,15 @@ impl Processor {
             // This is just spots in memory, right?
             self.peripheral_driver.display.draw(&pixels);
 
-            self.peripheral_driver.audio.start_beep();
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            self.peripheral_driver.audio.stop_beep();
+            //self.peripheral_driver.audio.start_beep();
+            //std::thread::sleep(std::time::Duration::from_millis(100));
+            //self.peripheral_driver.audio.stop_beep();
 
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(50));
 
-            // Instruction fetch
+            //
+            // Instruction fetch and execute
+            //
             let op1 = self.ram.memory[self.program_counter as usize];
             let op2 = self.ram.memory[self.program_counter as usize + 1];
 
@@ -135,6 +140,7 @@ impl Processor {
                 break 'running;
             }
 
+            // display instructions for debugging
             let str_instruction = fetch_instruction_str(op1, op2);
             println!(
                 "{:04x?} {:02x} {:02x} :: {}",
@@ -145,7 +151,6 @@ impl Processor {
             self.execute(op1, op2);
             if temp == self.program_counter {
                 println!("infinite loop detected");
-                //dbg!(self);
                 break 'running;
             }
         }
@@ -191,7 +196,7 @@ impl Processor {
                 let pc_high = (self.program_counter & 0xFF00) >> 8;
                 let pc_lo = self.program_counter & 0x00FF;
 
-                // TODO Endianness ?
+                // TODO check Endianness ?
                 self.ram.memory[self.stack_pointer as usize] = pc_high as u8;
                 self.ram.memory[(self.stack_pointer + 1) as usize] = pc_lo as u8;
 
@@ -316,10 +321,16 @@ impl Processor {
 
                     self.program_counter += 2;
                 }
-                _ => {
-                    //format!("not supported ({:x?}{:x?})", byte1, byte2),
-                }
+                _ => {}
             },
+            0x9 => {
+                // SNE Vx, Vy
+                if self.gpr_v[lo_nibble as usize] != self.gpr_v[high_nibble2 as usize] {
+                    // Extra +2 will skip the next instruction
+                    self.program_counter += 2;
+                }
+                self.program_counter += 2;
+            }
             0xA => {
                 // LD I, addr
                 let target: u16 = (((lo_nibble as u16) << 8) | (byte2 as u16)).into();
@@ -344,56 +355,105 @@ impl Processor {
                 // DRW Vx, Vy, nibble
                 //"DRW V{:x?}, V{:x?}, {:x?}",
                 // TODO
+                //////////////////////
 
                 self.program_counter += 2;
             }
             0xE => match byte2 {
+                // TODO
+                // BOTH OF THESE CHECK KEYBOARD STATE
+                //
                 0x9E => {
                     //format!("SKP V{:x?}", lo_nibble),
+                    self.program_counter += 2;
                 }
                 0xA1 => {
                     //format!("SKNP V{:x?}", lo_nibble),
+                    self.program_counter += 2;
                 }
-                _ => {
-                    //format!("not supported ({:x?}{:x?})", byte1, byte2),
-                }
+                _ => {}
             },
             0xF => match byte2 {
                 0x07 => {
-                    //format!("LD V{:x?}, DT", lo_nibble),
+                    // LD Vx, DT
+                    self.gpr_v[lo_nibble as usize] = self.delay_timer;
+
+                    self.program_counter += 2;
                 }
                 0x0A => {
+                    // TODO
+                    // LD Vx, K
+                    // OOO. Halt execution until a key is pressed, then load the value into Vx
+                    //
+                    // how does SDL handle this?
+                    // or just fucking loop in here dawg
+                    //
                     //format!("LD V{:x?}, K", lo_nibble),
+                    self.program_counter += 2;
                 }
                 0x15 => {
-                    //format!("LD DT, V{:x?}", lo_nibble),
+                    // LD DT, Vx
+                    self.delay_timer = self.gpr_v[lo_nibble as usize];
+
+                    self.program_counter += 2;
                 }
                 0x18 => {
-                    //format!("LD ST, V{:x?}", lo_nibble),
+                    //LD ST, Vx
+                    self.sound_timer = self.gpr_v[lo_nibble as usize];
+
+                    self.program_counter += 2;
                 }
                 0x1E => {
-                    //format!("ADD I, V{:x?}", lo_nibble),
+                    // ADD I, Vx
+                    self.reg_i = self.reg_i + self.gpr_v[lo_nibble as usize] as u16;
+
+                    self.program_counter += 2;
                 }
                 0x29 => {
-                    //format!("LD F, V{:x?}", lo_nibble),
+                    // LD F, Vx
+
+                    // since the fonts are loaded at the front of the memory, accessing them
+                    // by this with no offset should get me what I want?
+                    self.reg_i = self.ram.memory[self.gpr_v[lo_nibble as usize] as usize] as u16;
+
+                    self.program_counter += 2;
                 }
                 0x33 => {
-                    //format!("LD B, V{:x?}", lo_nibble),
+                    // LD B, Vx
+
+                    let mut value = self.gpr_v[lo_nibble as usize];
+                    let ones = value % 10;
+                    value = value / 10;
+                    let tens = value % 10;
+                    let hundreds = value / 10;
+                    self.ram.memory[self.reg_i as usize] = hundreds;
+                    self.ram.memory[(self.reg_i + 1) as usize] = tens;
+                    self.ram.memory[(self.reg_i + 2) as usize] = ones;
+
                     self.program_counter += 2;
                 }
                 0x55 => {
-                    //format!("LD [I], V{:x?}", lo_nibble),
+                    // LD [I], Vx
+                    //Store registers V0 through Vx in memory starting at location I.
+                    for i in 0x0..lo_nibble {
+                        self.ram.memory[(self.reg_i + (i as u16)) as usize] =
+                            self.gpr_v[i as usize];
+                    }
+
+                    self.program_counter += 2;
                 }
                 0x65 => {
-                    //format!("LD V{:x?}, [I]", lo_nibble),
+                    // LD Vx, [I]
+                    //Read registers V0 through Vx from memory starting at location I.
+                    for i in 0x0..lo_nibble {
+                        self.gpr_v[i as usize] =
+                            self.ram.memory[(self.reg_i + (i as u16)) as usize];
+                    }
+                    self.program_counter += 2;
                 }
-                _ => {
-                    //format!("not supported ({:x?}{:x?})", byte1, byte2),
-                }
+                _ => {}
             },
-            _ => {
-                //format!("{:x?}", high_nibble),
-            }
+            _ => {}
         }
     }
 }
@@ -431,6 +491,7 @@ fn fetch_instruction_str(byte1: u8, byte2: u8) -> String {
             0xE => format!("SHL V{:x?} {{, V{:x?}}}", lo_nibble, high_nibble2),
             _ => format!("not supported ({:x?}{:x?})", byte1, byte2),
         },
+        0x9 => format!("SNE V{:x?}, {:x?}", lo_nibble, byte2),
         0xA => format!("LD I, {:x?}{:x?}", lo_nibble, byte2),
         0xB => format!("JP V0, {:x?}{:x?}", lo_nibble, byte2),
         0xC => format!("RND V{:x?}, {:x?}", lo_nibble, byte2),
