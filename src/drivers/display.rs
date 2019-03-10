@@ -8,8 +8,8 @@ use crate::CHIP8_HEIGHT;
 use crate::CHIP8_WIDTH;
 
 const SCALE_FACTOR: u32 = 20;
-const SCREEN_WIDTH: u32 = CHIP8_WIDTH * SCALE_FACTOR;
-const SCREEN_HEIGHT: u32 = CHIP8_HEIGHT * SCALE_FACTOR;
+const SCREEN_WIDTH: u32 = (CHIP8_WIDTH as u32) * SCALE_FACTOR;
+const SCREEN_HEIGHT: u32 = (CHIP8_HEIGHT as u32) * SCALE_FACTOR;
 
 pub struct DisplayDriver {
     canvas: Canvas<Window>,

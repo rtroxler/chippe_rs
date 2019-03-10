@@ -10,8 +10,8 @@ use processor::Processor;
 const RAM_SIZE: usize = 4 * 1024; // 4 KB
 const GPR_SIZE: usize = 16;
 
-const CHIP8_WIDTH: u32 = 64;
-const CHIP8_HEIGHT: u32 = 32;
+const CHIP8_WIDTH: usize = 64;
+const CHIP8_HEIGHT: usize = 32;
 
 fn main() {
     let rom_name = env::args().nth(1).expect("Please provide a file name.");

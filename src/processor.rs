@@ -36,6 +36,8 @@ impl RamArray {
     }
 }
 
+//self.peripheral_driver.audio.start_beep();
+//self.peripheral_driver.audio.stop_beep();
 struct PeripheralDriver {
     audio: AudioDriver,
     display: DisplayDriver,
@@ -45,6 +47,7 @@ struct PeripheralDriver {
 pub struct Processor {
     peripheral_driver: PeripheralDriver,
     program_counter: u16,
+    display_state: [[u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize],
     keyboard_state: [bool; 16],
     gpr_v: [u8; GPR_SIZE], // General Purpose Registers (V0 - VF)
     reg_i: u16,
@@ -64,6 +67,7 @@ impl Processor {
             },
             program_counter: 0,
             keyboard_state: [false; 16],
+            display_state: [[0 as u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize],
             gpr_v: [0; GPR_SIZE],
             reg_i: 0,
             delay_timer: 0,
@@ -86,8 +90,8 @@ impl Processor {
         for i in 0..FONT_SET.len() {
             ram[i] = FONT_SET[i];
         }
-
         // Copy file binary into ram, starting at 0x200
+        println!("Loading file length: {} bytes", file_buf.len());
         ram[0x200..file_buf.len() + 0x200].copy_from_slice(&file_buf[..]);
 
         self.ram = RamArray {
@@ -109,24 +113,10 @@ impl Processor {
                 Err(e) => break 'running,
             } // make this return the key set as a result
 
-            std::thread::sleep(std::time::Duration::from_millis(50));
-
-            // Display if needed to redraw
-            let mut pixels = [[0 as u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize];
-            for y in 0..CHIP8_HEIGHT {
-                for x in 0..CHIP8_WIDTH {
-                    pixels[y as usize][x as usize] = (y as u8 + x as u8) % 2;
-                }
-            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
 
             // This is just spots in memory, right?
-            self.peripheral_driver.display.draw(&pixels);
-
-            //self.peripheral_driver.audio.start_beep();
-            //std::thread::sleep(std::time::Duration::from_millis(100));
-            //self.peripheral_driver.audio.stop_beep();
-
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.peripheral_driver.display.draw(&self.display_state);
 
             //
             // Instruction fetch and execute
@@ -147,12 +137,12 @@ impl Processor {
                 self.program_counter, op1, op2, str_instruction
             );
 
-            let temp = self.program_counter.clone();
+            //let temp = self.program_counter.clone();
             self.execute(op1, op2);
-            if temp == self.program_counter {
-                println!("infinite loop detected");
-                break 'running;
-            }
+            //if temp == self.program_counter {
+            //println!("infinite loop detected");
+            //break 'running;
+            //}
         }
     }
 
@@ -176,6 +166,8 @@ impl Processor {
 
                     let target: u16 = (((pc_high as u16) << 8) | (pc_lo as u16)).into();
                     self.program_counter = target;
+                    // I've been putting CALL on the stack then popping it and immediately calling again
+                    self.program_counter += 2;
 
                     self.stack_pointer -= 2;
                 }
@@ -188,22 +180,34 @@ impl Processor {
             }
             0x2 => {
                 //CALL addr
-                let target: u16 = (((lo_nibble as u16) << 8) | (byte2 as u16)).into();
 
                 // inc by 2 since we want to store a 16 bit addr and our ram is u8
+                //println!("Current SP: {:?}", self.stack_pointer);
                 self.stack_pointer += 2;
+                //println!("Next SP: {:?}", self.stack_pointer);
 
                 let pc_high = (self.program_counter & 0xFF00) >> 8;
                 let pc_lo = self.program_counter & 0x00FF;
 
+                //println!("RAM at stack pointer before adding pc");
+                //println!("{:?}", self.ram.memory[self.stack_pointer as usize]);
+                //println!("{:?}", self.ram.memory[(self.stack_pointer + 1) as usize]);
                 // TODO check Endianness ?
                 self.ram.memory[self.stack_pointer as usize] = pc_high as u8;
                 self.ram.memory[(self.stack_pointer + 1) as usize] = pc_lo as u8;
+                //println!("RAM at stack pointer after adding pc");
+                //println!("{:?}", self.ram.memory[self.stack_pointer as usize]);
+                //println!("{:?}", self.ram.memory[(self.stack_pointer + 1) as usize]);
 
+                let target: u16 = (((lo_nibble as u16) << 8) | (byte2 as u16)).into();
                 self.program_counter = target
             }
             0x3 => {
                 // SE Vx, byte
+                println!(
+                    "\t if {:x?} == {:x?} ",
+                    self.gpr_v[lo_nibble as usize], byte2
+                );
                 if self.gpr_v[lo_nibble as usize] == byte2 {
                     self.program_counter += 2;
                 }
@@ -231,7 +235,7 @@ impl Processor {
             }
             0x7 => {
                 // ADD Vx, byte
-                self.gpr_v[lo_nibble as usize] += byte2;
+                self.gpr_v[lo_nibble as usize] = self.gpr_v[lo_nibble as usize].wrapping_add(byte2);
 
                 self.program_counter += 2;
             }
@@ -353,22 +357,40 @@ impl Processor {
             }
             0xD => {
                 // DRW Vx, Vy, nibble
-                //"DRW V{:x?}, V{:x?}, {:x?}",
-                // TODO
-                //////////////////////
+
+                // Get a slice of ram[reg_i..reg_i + lo_nib2]
+                // each byte will occupy 8 rows
+                // num of columns represented by number of bytes
+                self.gpr_v[0x0f] = 0;
+                for byte in 0..=(lo_nibble2 as usize) {
+                    let y = (self.gpr_v[high_nibble2 as usize] as usize + byte) % CHIP8_HEIGHT;
+                    for bit in 0..8 {
+                        let x = (self.gpr_v[lo_nibble as usize] as usize + bit) % CHIP8_WIDTH;
+                        println!("Updating [{:x?}][{:x?}]", x, y);
+                        let color = (self.ram.memory[(self.reg_i + (byte as u16)) as usize]
+                            >> (7 - bit))
+                            & 1;
+                        self.gpr_v[0x0f] |= color & self.display_state[y][x];
+                        self.display_state[y][x] ^= color;
+                    }
+                }
 
                 self.program_counter += 2;
             }
             0xE => match byte2 {
-                // TODO
-                // BOTH OF THESE CHECK KEYBOARD STATE
-                //
                 0x9E => {
-                    //format!("SKP V{:x?}", lo_nibble),
+                    // SKP Vx, lo_nibble
+                    if self.keyboard_state[self.gpr_v[lo_nibble as usize] as usize] {
+                        self.program_counter += 2;
+                    }
+
                     self.program_counter += 2;
                 }
                 0xA1 => {
-                    //format!("SKNP V{:x?}", lo_nibble),
+                    // SKNP Vx, lo_nibble
+                    if !self.keyboard_state[self.gpr_v[lo_nibble as usize] as usize] {
+                        self.program_counter += 2;
+                    }
                     self.program_counter += 2;
                 }
                 _ => {}
@@ -381,7 +403,8 @@ impl Processor {
                     self.program_counter += 2;
                 }
                 0x0A => {
-                    // TODO
+                    //
+                    // TODO !!! not in pong !!!
                     // LD Vx, K
                     // OOO. Halt execution until a key is pressed, then load the value into Vx
                     //
@@ -394,7 +417,7 @@ impl Processor {
                 0x15 => {
                     // LD DT, Vx
                     self.delay_timer = self.gpr_v[lo_nibble as usize];
-
+                    println!("\tDT: {:x?}", self.delay_timer);
                     self.program_counter += 2;
                 }
                 0x18 => {
@@ -414,6 +437,9 @@ impl Processor {
 
                     // since the fonts are loaded at the front of the memory, accessing them
                     // by this with no offset should get me what I want?
+                    let maybe_font =
+                        self.ram.memory[self.gpr_v[lo_nibble as usize] as usize] as u16;
+                    println!("\tmaybe font? {:x?}", maybe_font);
                     self.reg_i = self.ram.memory[self.gpr_v[lo_nibble as usize] as usize] as u16;
 
                     self.program_counter += 2;
@@ -435,7 +461,7 @@ impl Processor {
                 0x55 => {
                     // LD [I], Vx
                     //Store registers V0 through Vx in memory starting at location I.
-                    for i in 0x0..lo_nibble {
+                    for i in 0x0..=lo_nibble {
                         self.ram.memory[(self.reg_i + (i as u16)) as usize] =
                             self.gpr_v[i as usize];
                     }
@@ -445,9 +471,12 @@ impl Processor {
                 0x65 => {
                     // LD Vx, [I]
                     //Read registers V0 through Vx from memory starting at location I.
-                    for i in 0x0..lo_nibble {
+                    println!("\tloading registers starting at I: {:x?}", self.reg_i);
+                    for i in 0x0..=lo_nibble {
+                        println!("\t before {:x?}", self.gpr_v[i as usize]);
                         self.gpr_v[i as usize] =
                             self.ram.memory[(self.reg_i + (i as u16)) as usize];
+                        println!("\t after {:x?}", self.gpr_v[i as usize]);
                     }
                     self.program_counter += 2;
                 }
