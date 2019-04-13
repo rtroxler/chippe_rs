@@ -46,6 +46,7 @@ struct PeripheralDriver {
 
 pub struct Processor {
     peripheral_driver: PeripheralDriver,
+    clock_speed: u64,
     program_counter: u16,
     display_state: [[u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize],
     keyboard_state: [bool; 16],
@@ -65,6 +66,7 @@ impl Processor {
                 display: DisplayDriver::new(&sdl),
                 keyboard: KeyboardDriver::new(&sdl),
             },
+            clock_speed: 1,
             program_counter: 0,
             keyboard_state: [false; 16],
             display_state: [[0 as u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize],
@@ -110,13 +112,27 @@ impl Processor {
             // set keyboard state and detect interrupt
             match self.peripheral_driver.keyboard.poll() {
                 Ok(key_state) => self.keyboard_state = key_state,
-                Err(e) => break 'running,
+                Err(_e) => break 'running,
             } // make this return the key set as a result
 
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(self.clock_speed));
 
             // This is just spots in memory, right?
+            // yep
             self.peripheral_driver.display.draw(&self.display_state);
+
+            // Decrement DT and ST by 1 each 60 Hz?
+            // just gonna be a clock cycle for now
+            if self.delay_timer >= 1 {
+                self.delay_timer -= 1;
+            }
+            if self.delay_timer >= 1 {
+                // play sound
+                self.peripheral_driver.audio.start_beep();
+                self.sound_timer -= 1;
+            } else {
+                self.peripheral_driver.audio.stop_beep();
+            }
 
             //
             // Instruction fetch and execute
@@ -137,17 +153,11 @@ impl Processor {
                 self.program_counter, op1, op2, str_instruction
             );
 
-            //let temp = self.program_counter.clone();
             self.execute(op1, op2);
-            //if temp == self.program_counter {
-            //println!("infinite loop detected");
-            //break 'running;
-            //}
         }
     }
 
     fn execute(&mut self, byte1: u8, byte2: u8) {
-        // todo
         let high_nibble = byte1 >> 4;
         let lo_nibble = byte1 & 0x0F;
 
@@ -158,6 +168,8 @@ impl Processor {
             0x0 => match byte2 {
                 0xE0 => {
                     //CLS
+                    self.display_state = [[0 as u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize];
+                    self.program_counter += 2;
                 }
                 0xEE => {
                     //RET
@@ -176,6 +188,7 @@ impl Processor {
             0x1 => {
                 // JP nnn
                 let target: u16 = (((lo_nibble as u16) << 8) | (byte2 as u16)).into();
+                //println!("\tJP {:x?}", target);
                 self.program_counter = target
             }
             0x2 => {
@@ -184,20 +197,12 @@ impl Processor {
                 // inc by 2 since we want to store a 16 bit addr and our ram is u8
                 //println!("Current SP: {:?}", self.stack_pointer);
                 self.stack_pointer += 2;
-                //println!("Next SP: {:?}", self.stack_pointer);
 
                 let pc_high = (self.program_counter & 0xFF00) >> 8;
                 let pc_lo = self.program_counter & 0x00FF;
 
-                //println!("RAM at stack pointer before adding pc");
-                //println!("{:?}", self.ram.memory[self.stack_pointer as usize]);
-                //println!("{:?}", self.ram.memory[(self.stack_pointer + 1) as usize]);
-                // TODO check Endianness ?
                 self.ram.memory[self.stack_pointer as usize] = pc_high as u8;
                 self.ram.memory[(self.stack_pointer + 1) as usize] = pc_lo as u8;
-                //println!("RAM at stack pointer after adding pc");
-                //println!("{:?}", self.ram.memory[self.stack_pointer as usize]);
-                //println!("{:?}", self.ram.memory[(self.stack_pointer + 1) as usize]);
 
                 let target: u16 = (((lo_nibble as u16) << 8) | (byte2 as u16)).into();
                 self.program_counter = target
@@ -205,7 +210,7 @@ impl Processor {
             0x3 => {
                 // SE Vx, byte
                 println!(
-                    "\t if {:x?} == {:x?} ",
+                    "\t SKIP IF if {:x?} == {:x?} ",
                     self.gpr_v[lo_nibble as usize], byte2
                 );
                 if self.gpr_v[lo_nibble as usize] == byte2 {
@@ -269,9 +274,12 @@ impl Processor {
                 }
                 0x4 => {
                     // ADD Vx, Vy, set VF to carry
-                    // TODO Set VF
-                    self.gpr_v[lo_nibble as usize] =
-                        self.gpr_v[lo_nibble as usize] + self.gpr_v[high_nibble2 as usize];
+                    let vx = self.gpr_v[lo_nibble as usize] as u16;
+                    let vy = self.gpr_v[high_nibble2 as usize] as u16;
+                    let result = vx + vy;
+
+                    self.gpr_v[lo_nibble as usize] = result as u8;
+                    self.gpr_v[0x0f] = if result > 0xFF { 1 } else { 0 };
 
                     self.program_counter += 2;
                 }
@@ -362,11 +370,10 @@ impl Processor {
                 // each byte will occupy 8 rows
                 // num of columns represented by number of bytes
                 self.gpr_v[0x0f] = 0;
-                for byte in 0..=(lo_nibble2 as usize) {
+                for byte in 0..(lo_nibble2 as usize) {
                     let y = (self.gpr_v[high_nibble2 as usize] as usize + byte) % CHIP8_HEIGHT;
                     for bit in 0..8 {
                         let x = (self.gpr_v[lo_nibble as usize] as usize + bit) % CHIP8_WIDTH;
-                        println!("Updating [{:x?}][{:x?}]", x, y);
                         let color = (self.ram.memory[(self.reg_i + (byte as u16)) as usize]
                             >> (7 - bit))
                             & 1;
@@ -403,6 +410,7 @@ impl Processor {
                     self.program_counter += 2;
                 }
                 0x0A => {
+                    println!("\n\n!!! TODO LD Vx, K !!!\n\n");
                     //
                     // TODO !!! not in pong !!!
                     // LD Vx, K
@@ -471,12 +479,9 @@ impl Processor {
                 0x65 => {
                     // LD Vx, [I]
                     //Read registers V0 through Vx from memory starting at location I.
-                    println!("\tloading registers starting at I: {:x?}", self.reg_i);
                     for i in 0x0..=lo_nibble {
-                        println!("\t before {:x?}", self.gpr_v[i as usize]);
                         self.gpr_v[i as usize] =
                             self.ram.memory[(self.reg_i + (i as u16)) as usize];
-                        println!("\t after {:x?}", self.gpr_v[i as usize]);
                     }
                     self.program_counter += 2;
                 }
