@@ -58,6 +58,199 @@ pub struct Processor {
     ram: RamArray,
 }
 
+#[derive(Debug)]
+pub struct InstructionArgs {
+    op: u8,
+    x: u8,
+    y: u8,
+    n: u8,
+}
+
+impl fmt::Display for InstructionArgs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "op: {:x?}\ninstruction args -> x: {:x?}, y: {:x?}, n: {:x?}, kk: {:02x?}",
+            self.op,
+            self.x,
+            self.y,
+            self.n,
+            self.kk()
+        )
+    }
+}
+
+impl InstructionArgs {
+    fn nnn(&self) -> u16 {
+        (self.x as u16) << 8 | (self.kk() as u16)
+    }
+
+    fn kk(&self) -> u8 {
+        (self.y as u8) << 4 | (self.n as u8)
+    }
+
+    fn fetch_instruction_func(&self) -> fn(&mut Processor, Self) {
+        match self.op {
+            0x0 => match self.kk() {
+                0xE0 => op_codes::cls,
+                0xEE => op_codes::ret,
+                _ => op_codes::noop,
+            },
+            0x1 => op_codes::jump,
+            0x2 => op_codes::call,
+            0x3 => op_codes::se_vx_byte,
+            0x4 => op_codes::sne_vx_byte,
+            0x5 => op_codes::se_vx_vy,
+            0x6 => op_codes::ld_vx_byte,
+            0x7 => op_codes::add_vx_byte,
+            0x8 => match self.n {
+                0x0 => op_codes::ld_vx_vy,
+                0x1 => op_codes::or_vx_vy,
+                0x2 => op_codes::and_vx_vy,
+                0x3 => op_codes::xor_vx_vy,
+                0x4 => op_codes::add_vx_vy,
+                0x5 => op_codes::sub_vx_vy,
+                _ => op_codes::noop,
+            },
+            _ => op_codes::noop,
+        }
+    }
+}
+
+mod op_codes {
+    use crate::processor::{InstructionArgs, Processor, CHIP8_HEIGHT, CHIP8_WIDTH};
+
+    pub fn noop(cpu: &mut Processor, _args: InstructionArgs) {}
+
+    /// CLS
+    pub fn cls(cpu: &mut Processor, _args: InstructionArgs) {
+        cpu.display_state = [[0 as u8; CHIP8_WIDTH as usize]; CHIP8_HEIGHT as usize];
+        cpu.program_counter += 2;
+    }
+
+    /// RET
+    pub fn ret(cpu: &mut Processor, _args: InstructionArgs) {
+        let pc_high = cpu.ram.memory[cpu.stack_pointer as usize];
+        let pc_lo = cpu.ram.memory[(cpu.stack_pointer + 1) as usize];
+
+        let target: u16 = (((pc_high as u16) << 8) | (pc_lo as u16)).into();
+        cpu.program_counter = target;
+        cpu.program_counter += 2;
+
+        cpu.stack_pointer -= 2;
+    }
+
+    /// JP nnn
+    pub fn jump(cpu: &mut Processor, args: InstructionArgs) {
+        cpu.program_counter = args.nnn()
+    }
+
+    /// CALL nnn
+    pub fn call(cpu: &mut Processor, args: InstructionArgs) {
+        // inc by 2 since we want to store a 16 bit addr and our ram is u8
+        cpu.stack_pointer += 2;
+
+        let pc_high = (cpu.program_counter & 0xFF00) >> 8;
+        let pc_lo = cpu.program_counter & 0x00FF;
+
+        cpu.ram.memory[cpu.stack_pointer as usize] = pc_high as u8;
+        cpu.ram.memory[(cpu.stack_pointer + 1) as usize] = pc_lo as u8;
+
+        cpu.program_counter = args.nnn()
+    }
+
+    /// SE Vx, byte
+    pub fn se_vx_byte(cpu: &mut Processor, args: InstructionArgs) {
+        if cpu.gpr_v[args.x as usize] == args.kk() {
+            cpu.program_counter += 2;
+        }
+        cpu.program_counter += 2;
+    }
+
+    /// SNE Vx, byte
+    pub fn sne_vx_byte(cpu: &mut Processor, args: InstructionArgs) {
+        if cpu.gpr_v[args.x as usize] != args.kk() {
+            cpu.program_counter += 2;
+        }
+        cpu.program_counter += 2;
+    }
+
+    /// SE Vx, Vy
+    pub fn se_vx_vy(cpu: &mut Processor, args: InstructionArgs) {
+        if cpu.gpr_v[args.x as usize] == cpu.gpr_v[args.y as usize] {
+            cpu.program_counter += 2;
+        }
+        cpu.program_counter += 2;
+    }
+
+    /// LD Vx, byte
+    pub fn ld_vx_byte(cpu: &mut Processor, args: InstructionArgs) {
+        cpu.gpr_v[args.x as usize] = args.kk();
+
+        cpu.program_counter += 2;
+    }
+
+    /// ADD Vx, byte
+    pub fn add_vx_byte(cpu: &mut Processor, args: InstructionArgs) {
+        cpu.gpr_v[args.x as usize] = cpu.gpr_v[args.x as usize].wrapping_add(args.kk());
+
+        cpu.program_counter += 2;
+    }
+
+    /// LD Vx, Vy
+    pub fn ld_vx_vy(cpu: &mut Processor, args: InstructionArgs) {
+        cpu.gpr_v[args.x as usize] = cpu.gpr_v[args.y as usize];
+
+        cpu.program_counter += 2;
+    }
+
+    /// OR Vx, Vy
+    pub fn or_vx_vy(cpu: &mut Processor, args: InstructionArgs) {
+        cpu.gpr_v[args.x as usize] = cpu.gpr_v[args.x as usize] | cpu.gpr_v[args.y as usize];
+
+        cpu.program_counter += 2;
+    }
+
+    /// AND Vx, Vy
+    pub fn and_vx_vy(cpu: &mut Processor, args: InstructionArgs) {
+        cpu.gpr_v[args.x as usize] = cpu.gpr_v[args.x as usize] & cpu.gpr_v[args.y as usize];
+
+        cpu.program_counter += 2;
+    }
+
+    /// XOR Vx, Vy
+    pub fn xor_vx_vy(cpu: &mut Processor, args: InstructionArgs) {
+        cpu.gpr_v[args.x as usize] = cpu.gpr_v[args.x as usize] ^ cpu.gpr_v[args.y as usize];
+
+        cpu.program_counter += 2;
+    }
+
+    /// ADD Vx, Vy, VF = carry
+    pub fn add_vx_vy(cpu: &mut Processor, args: InstructionArgs) {
+        let vx = cpu.gpr_v[args.x as usize] as u16;
+        let vy = cpu.gpr_v[args.y as usize] as u16;
+        let result = vx + vy;
+
+        cpu.gpr_v[args.x as usize] = result as u8;
+        cpu.gpr_v[0x0f] = if result > 0xFF { 1 } else { 0 };
+
+        cpu.program_counter += 2;
+    }
+
+    /// SUB Vx, Vy
+    pub fn sub_vx_vy(cpu: &mut Processor, args: InstructionArgs) {
+        if cpu.gpr_v[args.x as usize] > cpu.gpr_v[args.y as usize] {
+            cpu.gpr_v[0xf] = 1
+        } else {
+            cpu.gpr_v[0xf] = 0
+        }
+
+        cpu.gpr_v[args.x as usize] = cpu.gpr_v[args.x as usize] - cpu.gpr_v[args.y as usize];
+
+        cpu.program_counter += 2;
+    }
+}
+
 impl Processor {
     pub fn new(sdl: &sdl2::Sdl) -> Processor {
         Processor {
@@ -123,10 +316,10 @@ impl Processor {
 
             // Decrement DT and ST by 1 each 60 Hz?
             // just gonna be a clock cycle for now
-            if self.delay_timer >= 1 {
+            if self.delay_timer > 0 {
                 self.delay_timer -= 1;
             }
-            if self.delay_timer >= 1 {
+            if self.delay_timer > 0 {
                 // play sound
                 self.peripheral_driver.audio.start_beep();
                 self.sound_timer -= 1;
@@ -140,11 +333,24 @@ impl Processor {
             let op1 = self.ram.memory[self.program_counter as usize];
             let op2 = self.ram.memory[self.program_counter as usize + 1];
 
-            if op1 == 0x00 && op2 == 0x00 {
-                // Break on 0 byte? Avoids the zeroed out end of RAM, not sure if
-                // necessary or not though
-                break 'running;
-            }
+            let opcode = (op1 as u16) << 8 | (op2 as u16);
+
+            let nibbles = (
+                (opcode & 0xF000) >> 12 as u8,
+                (opcode & 0x0F00) >> 8 as u8,
+                (opcode & 0x00F0) >> 4 as u8,
+                (opcode & 0x000F) as u8,
+            );
+
+            // So I can return a function pointer
+            let args = InstructionArgs {
+                op: nibbles.0 as u8,
+                x: nibbles.1 as u8,
+                y: nibbles.2 as u8,
+                n: nibbles.3,
+            };
+
+            println!("{}", args);
 
             // display instructions for debugging
             let str_instruction = fetch_instruction_str(op1, op2);
@@ -153,16 +359,19 @@ impl Processor {
                 self.program_counter, op1, op2, str_instruction
             );
 
-            self.execute(op1, op2);
+            let func = args.fetch_instruction_func();
+            func(self, args);
+            //self.execute(op1, op2);
         }
     }
 
     fn execute(&mut self, byte1: u8, byte2: u8) {
         let high_nibble = byte1 >> 4;
-        let lo_nibble = byte1 & 0x0F;
+        let lo_nibble = byte1 & 0x0F; // x
 
-        let high_nibble2 = byte2 >> 4;
-        let lo_nibble2 = byte2 & 0x0F;
+        let high_nibble2 = byte2 >> 4; // y
+        let lo_nibble2 = byte2 & 0x0F; // n
+                                       // byte2 kk()
 
         match high_nibble {
             0x0 => match byte2 {
@@ -209,10 +418,6 @@ impl Processor {
             }
             0x3 => {
                 // SE Vx, byte
-                println!(
-                    "\t SKIP IF if {:x?} == {:x?} ",
-                    self.gpr_v[lo_nibble as usize], byte2
-                );
                 if self.gpr_v[lo_nibble as usize] == byte2 {
                     self.program_counter += 2;
                 }
